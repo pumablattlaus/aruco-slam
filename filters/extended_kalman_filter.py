@@ -36,10 +36,21 @@ LM_DIMS = 3  # x, y, z
 class EKF(BaseFilter):
     """Object for tracking the positions of the cameras and landmarks."""
 
-    def __init__(self, initial_camera_pose: np.ndarray) -> None:
+    def __init__(
+        self,
+        initial_camera_pose: np.ndarray,
+        map_file: str | None = None,
+        *,
+        load_calibration: bool = True,
+        init_detector: bool = True,
+    ) -> None:
         """Initialize filter."""
-        # TODO(ssilver): add map loading functionality # noqa: TD003 FIX002
-        super().__init__(initial_camera_pose, None)
+        super().__init__(
+            initial_camera_pose,
+            map_file,
+            load_calibration=load_calibration,
+            init_detector=init_detector,
+        )
 
         # 3n + 10, where n is the number of landmarks
         self.state = np.array(initial_camera_pose)

@@ -39,31 +39,37 @@ class BaseFilter:
         self,
         initial_pose: np.ndarray,
         map_file: str | None,
+        *,
+        load_calibration: bool = True,
+        init_detector: bool = True,
     ) -> None:
         """Initialize the slam object.
 
         Arguments:
             initial_pose: the initial pose of the camera
-            calib_matrix: the camera calibration matrix
-            dist_coeffs: the camera distortion coefficients
-            filter_type: the type of filter to use
             map_file: the file to load the map from
+            load_calibration: whether to load camera calibration files
+            init_detector: whether to initialize the ArUco detector
 
         """
-        # assert that the camera matrix and distortion coefficients are saved
-        if not Path(CALIB_MTX_FILE).exists():
-            msg = "Camera matrix not found. Run calibration.py first."
-            raise FileNotFoundError(msg)
-        if not Path(DIST_COEFFS_FILE).exists():
-            msg = "Distortion coefficients not found. Run calibration.py first."
-            raise FileNotFoundError(msg)
+        if load_calibration:
+            # assert that the camera matrix and distortion coefficients are saved
+            if not Path(CALIB_MTX_FILE).exists():
+                msg = "Camera matrix not found. Run calibration.py first."
+                raise FileNotFoundError(msg)
+            if not Path(DIST_COEFFS_FILE).exists():
+                msg = "Distortion coefficients not found. Run calibration.py first."
+                raise FileNotFoundError(msg)
 
-        calib_matrix = np.load(CALIB_MTX_FILE)
-        dist_coeffs = np.load(DIST_COEFFS_FILE)
+            calib_matrix = np.load(CALIB_MTX_FILE)
+            dist_coeffs = np.load(DIST_COEFFS_FILE)
+        else:
+            calib_matrix = None
+            dist_coeffs = None
 
         self.calib_matrix = calib_matrix
         self.dist_coeffs = dist_coeffs
-        self.detector = self.init_aruco_detector()
+        self.detector = self.init_aruco_detector() if init_detector else None
 
         self.camera_pose = initial_pose
 
@@ -106,6 +112,9 @@ class BaseFilter:
             np.array: the estimated poses of the markers
 
         """
+        if self.calib_matrix is None or self.dist_coeffs is None:
+            msg = "Calibration data not loaded; cannot estimate marker poses."
+            raise RuntimeError(msg)
         marker_points = np.array(
             [
                 [-marker_size / 2, marker_size / 2, 0],

@@ -164,6 +164,27 @@ cd ../..
 
 Please ensure that you have properly calibrated your camera.
 
+## ROS 2 Jazzy
+
+This repository also provides a ROS 2 Jazzy wrapper that consumes marker poses
+from TF and publishes the camera pose.
+
+Build and run:
+
+```
+cd ~/workspaces/tum_print_drive_ws
+colcon build --packages-select aruco_slam
+source install/setup.bash
+ros2 launch aruco_slam aruco_slam_tf.launch.py
+```
+
+Key parameters:
+- `base_frame` (default `base_link`)
+- `marker_frame_regex` (default `^aruco_marker_(\d+)_base$`)
+- `camera_pose_topic` (default `camera_pose`)
+
+The node expects marker frames named like `aruco_marker_23_base`.
+
 ## File Structure
 
 ```

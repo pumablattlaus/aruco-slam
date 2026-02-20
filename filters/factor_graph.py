@@ -30,9 +30,21 @@ SLIDING_WINDOW_SIZE = 3
 class FactorGraph(BaseFilter):
     """Factor Graph that tracks the positions of the cameras and landmarks."""
 
-    def __init__(self, initial_camera_pose: np.ndarray) -> None:
+    def __init__(
+        self,
+        initial_camera_pose: np.ndarray,
+        map_file: str | None = None,
+        *,
+        load_calibration: bool = True,
+        init_detector: bool = True,
+    ) -> None:
         """Initialize filter."""
-        super().__init__(initial_camera_pose, None)
+        super().__init__(
+            initial_camera_pose,
+            map_file,
+            load_calibration=load_calibration,
+            init_detector=init_detector,
+        )
 
         self.position = initial_camera_pose[:3]
         self.rotation = initial_camera_pose[3:7]
