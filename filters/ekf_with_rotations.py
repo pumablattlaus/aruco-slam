@@ -40,6 +40,14 @@ LM_DIMS = 10  # x, y, z
 QUAT_THRESHOLD = 50
 
 
+def _quat_wxyz_to_xyzw(quat: np.ndarray | list[float]) -> np.ndarray:
+    return np.array([quat[1], quat[2], quat[3], quat[0]], dtype=float)
+
+
+def _quat_xyzw_to_wxyz(quat: np.ndarray | list[float]) -> np.ndarray:
+    return np.array([quat[3], quat[0], quat[1], quat[2]], dtype=float)
+
+
 class EKF_Rotations(BaseFilter):
     """Object for tracking the positions of the cameras and landmarks."""
 
@@ -158,11 +166,11 @@ class EKF_Rotations(BaseFilter):
         dq = [1, *innovation[ERROR_DIMS] / 2]  # small angle approximation
 
         # apply the correction to the accumulative quaternion
-        q = Rotation.from_quat(q, scalar_first=True)
-        dq = Rotation.from_quat(dq, scalar_first=True)
-        q = dq * q
+        q_rot = Rotation.from_quat(_quat_wxyz_to_xyzw(q))
+        dq_rot = Rotation.from_quat(_quat_wxyz_to_xyzw(dq))
+        q_rot = dq_rot * q_rot
 
-        self.state[QUAT_DIMS] = q.as_quat(scalar_first=True)
+        self.state[QUAT_DIMS] = _quat_xyzw_to_wxyz(q_rot.as_quat())
 
         # explicit reset, but not necessarily needed
         self.state[ERROR_DIMS] = [0, 0, 0]
@@ -182,10 +190,10 @@ class EKF_Rotations(BaseFilter):
             lm_q = self.state[quat_dims]
             lm_dq = [1, *innovation[error_dims] / 2]
             # small angle approximation
-            lm_q = Rotation.from_quat(lm_q, scalar_first=True)
-            lm_dq = Rotation.from_quat(lm_dq, scalar_first=True)
-            lm_q = lm_dq * lm_q
-            self.state[quat_dims] = lm_q.as_quat(scalar_first=True)
+            lm_q_rot = Rotation.from_quat(_quat_wxyz_to_xyzw(lm_q))
+            lm_dq_rot = Rotation.from_quat(_quat_wxyz_to_xyzw(lm_dq))
+            lm_q_rot = lm_dq_rot * lm_q_rot
+            self.state[quat_dims] = _quat_xyzw_to_wxyz(lm_q_rot.as_quat())
 
         # update uncertainty
         ident = np.eye(LM_DIMS * self.num_landmarks + CAM_DIMS)
@@ -224,10 +232,11 @@ class EKF_Rotations(BaseFilter):
 
             h_row = self.h([*cam_state, *landmark_state]).squeeze()
 
-            orientation = Rotation.from_euler(
+            orientation_xyzw = Rotation.from_euler(
                 "xyz",
                 pose[3:],
-            ).as_quat(scalar_first=True)
+            ).as_quat()
+            orientation = _quat_xyzw_to_wxyz(orientation_xyzw)
 
             # convert to quaternion
             pose_quat = np.hstack(
@@ -309,8 +318,7 @@ class EKF_Rotations(BaseFilter):
         # a new demo will be needed to test this update the state
 
         rot_mc = Rotation.from_quat(
-            camera_rotation,
-            scalar_first=True,
+            _quat_wxyz_to_xyzw(camera_rotation),
         ).as_matrix()
         rot_cm = np.linalg.inv(rot_mc)
 
@@ -323,7 +331,7 @@ class EKF_Rotations(BaseFilter):
         # put the landmark's pose in map frame
         t_ml = rot_cm @ xyz_cl + camera_translation
         q_ml = rot_cm @ rot_cl
-        q_ml = Rotation.from_matrix(q_ml).as_quat(scalar_first=True)
+        q_ml = _quat_xyzw_to_wxyz(Rotation.from_matrix(q_ml).as_quat())
         t_ml = np.hstack((t_ml, q_ml))
         t_ml = np.hstack((t_ml, np.zeros(3)))  # add error correction
 
@@ -382,8 +390,7 @@ class EKF_Rotations(BaseFilter):
             ecq_ml = dq_ml * q_ml
 
             # Rotation matrices
-            rot_mc = ecq_mc.to_rotation_matrix()
-            rot_cm = rot_mc.inv()
+            rot_cm = ecq_mc.inverse().to_rotation_matrix()
 
             # Define state vectors
             xyz_mc = sp.Matrix([x_mc, y_mc, z_mc])

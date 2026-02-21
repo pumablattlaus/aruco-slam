@@ -63,7 +63,7 @@ class TfSlamNode(Node):
         super().__init__("aruco_slam_tf")
 
         self.declare_parameter("filter", "ekf")
-        self.declare_parameter("base_frame", "base_link")
+        self.declare_parameter("base_frame", "robot_base_footprint")
         self.declare_parameter("map_frame", "map")
         self.declare_parameter(
             "marker_frame_regex",
@@ -79,6 +79,7 @@ class TfSlamNode(Node):
         self.declare_parameter("map_file", "")
         self.declare_parameter("load_map", False)
         self.declare_parameter("load_calibration", False)
+        self.declare_parameter("warn_interval_sec", 5.0)
 
         self.base_frame = self.get_parameter("base_frame").value
         self.map_frame = self.get_parameter("map_frame").value
@@ -104,12 +105,19 @@ class TfSlamNode(Node):
         map_file = str(self.map_file) if load_map else None
 
         initial_pose = np.array([0, 0, 0, 1, 0, 0, 0, 0, 0, 0], dtype=float)
+        self.get_logger().info(
+            f"TfSlamNode init: module={Path(__file__).resolve()} "
+            f"filter={self.get_parameter('filter').value} "
+            f"base_frame={self.base_frame} map_frame={self.map_frame}",
+        )
+        self.get_logger().info("Initializing tracker backend...")
         self.tracker = init_tracker(
             self.get_parameter("filter").value,
             initial_pose,
             map_file,
             load_calibration=bool(self.get_parameter("load_calibration").value),
         )
+        self.get_logger().info("Tracker backend initialized.")
 
         self.pose_pub = self.create_publisher(
             PoseStamped,
@@ -131,6 +139,10 @@ class TfSlamNode(Node):
         update_rate = float(self.get_parameter("update_rate_hz").value)
         update_rate = update_rate if update_rate > 0.0 else 30.0
         self.tf_timeout = Duration(seconds=float(self.get_parameter("tf_timeout_sec").value))
+        self.warn_interval = Duration(seconds=float(self.get_parameter("warn_interval_sec").value))
+        self.last_no_frames_warn = None
+        self.last_no_pose_warn = None
+        self.last_tf_fail_warn = None
         self.timer = self.create_timer(1.0 / update_rate, self._on_timer)
 
     @staticmethod
@@ -160,6 +172,13 @@ class TfSlamNode(Node):
                 matches.append((frame, int(match.group(1))))
         return matches
 
+    def _maybe_warn(self, attr_name: str, message: str) -> None:
+        now = self.get_clock().now()
+        last_time = getattr(self, attr_name)
+        if last_time is None or (now - last_time) >= self.warn_interval:
+            self.get_logger().warn(message)
+            setattr(self, attr_name, now)
+
     def _lookup_marker_pose(self, frame: str) -> np.ndarray | None:
         try:
             transform = self.tf_buffer.lookup_transform(
@@ -186,16 +205,36 @@ class TfSlamNode(Node):
     def _on_timer(self) -> None:
         ids: list[int] = []
         poses: list[np.ndarray] = []
+        frames = list(self._list_marker_frames())
 
-        for frame, marker_id in self._list_marker_frames():
+        if not frames:
+            self._maybe_warn(
+                "last_no_frames_warn",
+                f"No TF frames match regex '{self.marker_frame_regex.pattern}'.",
+            )
+            return
+
+        failed = 0
+        for frame, marker_id in frames:
             pose = self._lookup_marker_pose(frame)
             if pose is None:
+                failed += 1
                 continue
             ids.append(marker_id)
             poses.append(pose)
 
         if not ids:
+            self._maybe_warn(
+                "last_no_pose_warn",
+                f"No marker poses available from TF (failed {failed}/{len(frames)} lookups).",
+            )
             return
+
+        if failed:
+            self._maybe_warn(
+                "last_tf_fail_warn",
+                f"TF lookup failed for {failed}/{len(frames)} marker frames.",
+            )
 
         self.tracker.observe(ids, poses)
         camera_pose, _ = self.tracker.get_poses()

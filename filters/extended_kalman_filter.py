@@ -33,6 +33,14 @@ ERROR_DIMS = slice(7, 10)  # ex, ey, ez
 LM_DIMS = 3  # x, y, z
 
 
+def _quat_wxyz_to_xyzw(quat: np.ndarray | list[float]) -> np.ndarray:
+    return np.array([quat[1], quat[2], quat[3], quat[0]], dtype=float)
+
+
+def _quat_xyzw_to_wxyz(quat: np.ndarray | list[float]) -> np.ndarray:
+    return np.array([quat[3], quat[0], quat[1], quat[2]], dtype=float)
+
+
 class EKF(BaseFilter):
     """Object for tracking the positions of the cameras and landmarks."""
 
@@ -149,11 +157,11 @@ class EKF(BaseFilter):
         dq = [1, *innovation[ERROR_DIMS] / 2]  # small angle approximation
 
         # apply the correction to the accumulative quaternion
-        q = Rotation.from_quat(q, scalar_first=True)
-        dq = Rotation.from_quat(dq, scalar_first=True)
-        q = dq * q
+        q_rot = Rotation.from_quat(_quat_wxyz_to_xyzw(q))
+        dq_rot = Rotation.from_quat(_quat_wxyz_to_xyzw(dq))
+        q_rot = dq_rot * q_rot
 
-        self.state[QUAT_DIMS] = q.as_quat(scalar_first=True)
+        self.state[QUAT_DIMS] = _quat_xyzw_to_wxyz(q_rot.as_quat())
 
         # explicit reset, but not necessarily needed
         self.state[ERROR_DIMS] = [0, 0, 0]
@@ -269,8 +277,7 @@ class EKF(BaseFilter):
         # a new demo will be needed to test this update the state
 
         rot_mc = Rotation.from_quat(
-            camera_rotation,
-            scalar_first=True,
+            _quat_wxyz_to_xyzw(camera_rotation),
         ).as_matrix()
 
         rot_cm = np.linalg.inv(rot_mc)
@@ -321,8 +328,7 @@ class EKF(BaseFilter):
         ecq_mc = dq * q_mc
 
         # Rotation matrices
-        rot_mc = ecq_mc.to_rotation_matrix()
-        rot_cm = rot_mc.inv()
+        rot_cm = ecq_mc.inverse().to_rotation_matrix()
 
         # Define state vectors
         xyz_mc = sp.Matrix([x_mc, y_mc, z_mc])
