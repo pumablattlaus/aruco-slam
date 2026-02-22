@@ -9,6 +9,7 @@ from typing import Iterable
 import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Odometry
 from rclpy.duration import Duration
 from rclpy.node import Node
 from scipy.spatial.transform import Rotation
@@ -62,7 +63,7 @@ class TfSlamNode(Node):
     def __init__(self) -> None:
         super().__init__("aruco_slam_tf")
 
-        self.declare_parameter("filter", "ekf")
+        self.declare_parameter("filter", "factorgraph")
         self.declare_parameter("base_frame", "robot_base_footprint")
         self.declare_parameter("map_frame", "map")
         self.declare_parameter(
@@ -71,6 +72,8 @@ class TfSlamNode(Node):
         )
         self.declare_parameter("update_rate_hz", 30.0)
         self.declare_parameter("tf_timeout_sec", 0.1)
+        self.declare_parameter("use_odometry", True)
+        self.declare_parameter("odom_topic", "/robot/robotnik_base_control/odom")
         self.declare_parameter("camera_pose_topic", "camera_pose")
         self.declare_parameter("save_trajectory", True)
         self.declare_parameter("save_map", False)
@@ -127,6 +130,21 @@ class TfSlamNode(Node):
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        self.use_odometry = bool(self.get_parameter("use_odometry").value)
+        self._last_odom_translation: np.ndarray | None = None
+        self._last_odom_rotation: Rotation | None = None
+        self._pending_odom_delta: np.ndarray | None = None
+        self.odom_sub = None
+        if self.use_odometry:
+            odom_topic = self.get_parameter("odom_topic").value
+            self.odom_sub = self.create_subscription(
+                Odometry,
+                odom_topic,
+                self._on_odom,
+                20,
+            )
+            self.get_logger().info(f"Using odometry topic: {odom_topic}")
 
         self.save_trajectory = bool(self.get_parameter("save_trajectory").value)
         self.save_map = bool(self.get_parameter("save_map").value)
@@ -202,6 +220,52 @@ class TfSlamNode(Node):
             dtype=float,
         )
 
+    @staticmethod
+    def _compose_relative_poses(pose_a: np.ndarray, pose_b: np.ndarray) -> np.ndarray:
+        """Compose two relative poses represented as [dx, dy, dz, rx, ry, rz]."""
+        rot_a = Rotation.from_rotvec(pose_a[3:6])
+        rot_b = Rotation.from_rotvec(pose_b[3:6])
+        composed_translation = pose_a[:3] + rot_a.apply(pose_b[:3])
+        composed_rotation = (rot_a * rot_b).as_rotvec()
+        return np.hstack((composed_translation, composed_rotation))
+
+    def _on_odom(self, msg: Odometry) -> None:
+        pose = msg.pose.pose
+        curr_translation = np.array(
+            [pose.position.x, pose.position.y, pose.position.z],
+            dtype=float,
+        )
+        curr_rotation = Rotation.from_quat(
+            [
+                pose.orientation.x,
+                pose.orientation.y,
+                pose.orientation.z,
+                pose.orientation.w,
+            ],
+        )
+
+        if self._last_odom_translation is None or self._last_odom_rotation is None:
+            self._last_odom_translation = curr_translation
+            self._last_odom_rotation = curr_rotation
+            return
+
+        rel_translation = self._last_odom_rotation.inv().apply(
+            curr_translation - self._last_odom_translation,
+        )
+        rel_rotation = (self._last_odom_rotation.inv() * curr_rotation).as_rotvec()
+        delta = np.hstack((rel_translation, rel_rotation))
+
+        if self._pending_odom_delta is None:
+            self._pending_odom_delta = delta
+        else:
+            self._pending_odom_delta = self._compose_relative_poses(
+                self._pending_odom_delta,
+                delta,
+            )
+
+        self._last_odom_translation = curr_translation
+        self._last_odom_rotation = curr_rotation
+
     def _on_timer(self) -> None:
         ids: list[int] = []
         poses: list[np.ndarray] = []
@@ -235,6 +299,10 @@ class TfSlamNode(Node):
                 "last_tf_fail_warn",
                 f"TF lookup failed for {failed}/{len(frames)} marker frames.",
             )
+
+        if self.use_odometry and hasattr(self.tracker, "set_odometry_delta"):
+            self.tracker.set_odometry_delta(self._pending_odom_delta)
+            self._pending_odom_delta = None
 
         self.tracker.observe(ids, poses)
         camera_pose, _ = self.tracker.get_poses()

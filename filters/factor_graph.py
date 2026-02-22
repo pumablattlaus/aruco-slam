@@ -79,6 +79,8 @@ class FactorGraph(BaseFilter):
             ),
         )
 
+        self.odom_locked_noise = gtsam.noiseModel.Constrained.All(6)
+
         self.measurement_noise = gtsam.noiseModel.Diagonal.Sigmas(
             np.array(
                 [
@@ -131,6 +133,17 @@ class FactorGraph(BaseFilter):
 
         # window to keep track of the last few poses and their factors
         self.sliding_window = []
+        self.pending_odom_delta: np.ndarray | None = None
+
+    def set_odometry_delta(self, odom_delta: np.ndarray | None) -> None:
+        """Set relative odometry delta to use for the next timestep.
+
+        Arguments:
+            odom_delta: relative motion from current pose to next pose as
+                [dx, dy, dz, rx, ry, rz], where rotation is a rotvec.
+
+        """
+        self.pending_odom_delta = odom_delta
 
     def observe(
         self,
@@ -154,8 +167,9 @@ class FactorGraph(BaseFilter):
         for idx, pose in zip(ids, poses):
             self.add_landmark_observation(idx, pose, camera_pose)
 
-        # use last camera pose and zero motion model to add odometry factor
-        self.add_odom_factor_and_estimate(camera_pose)
+        # use last camera pose and relative odometry factor to add motion
+        self.add_odom_factor_and_estimate(camera_pose, self.pending_odom_delta)
+        self.pending_odom_delta = None
 
         # don't optimize on the first iteration
         if self.i == 0:
@@ -172,28 +186,44 @@ class FactorGraph(BaseFilter):
     def add_odom_factor_and_estimate(
         self,
         camera_pose: gtsam.Pose3,
+        odom_delta: np.ndarray | None,
     ) -> None:
         """Add an odometry factor to the graph.
 
         Arguments:
             camera_pose: the pose of the camera
+            odom_delta: relative motion from current pose to next pose as
+                [dx, dy, dz, rx, ry, rz], where rotation is a rotvec.
 
         """
-        # TODO(ssilver): Add moving average model. # noqa: TD003 FIX002
+        if odom_delta is None:
+            rel_translation = np.zeros(3, dtype=float)
+            rel_rotation = np.zeros(3, dtype=float)
+        else:
+            rel_translation = np.asarray(odom_delta[:3], dtype=float)
+            rel_rotation = np.asarray(odom_delta[3:6], dtype=float)
+
+        is_exact_stationary = bool(
+            np.all(rel_translation == 0.0) and np.all(rel_rotation == 0.0),
+        )
+
+        rel_pose = Pose3(
+            Rot3.Rodrigues(rel_rotation),
+            Point3(rel_translation),
+        )
+
+        next_pose = camera_pose.compose(rel_pose)
 
         self.initial_estimate.insert(
             X(self.i + 1),
-            camera_pose,
+            next_pose,
         )
 
         odom_factor = gtsam.BetweenFactorPose3(
-            X(self.i + 1),
             X(self.i),
-            Pose3(
-                Rot3.Rodrigues([0, 0, 0]),
-                Point3(0, 0, 0),
-            ),
-            self.odom_noise,
+            X(self.i + 1),
+            rel_pose,
+            self.odom_locked_noise if is_exact_stationary else self.odom_noise,
         )
 
         self.graph.push_back(odom_factor)
